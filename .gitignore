@@ -39,4 +39,4 @@ dist/
 .cli-template.json
 
 # Project specific files
-tmp/ 
+tmp/
