@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -92,8 +93,10 @@ Examples:
 		// Check PR if requested
 		if checkPR && len(result.files) > 0 {
 			fmt.Printf("\n🔍 Checking related PRs...\n")
-			// TODO: Implement PR checking logic
-			fmt.Printf("  └── PR checking will be implemented in next iteration\n")
+			err := checkRelatedPRs(result.files)
+			if err != nil {
+				fmt.Printf("  ⚠️  Error checking PRs: %v\n", err)
+			}
 		}
 
 		return nil
@@ -299,6 +302,134 @@ func formatRelativeTime(t time.Time) string {
 	} else {
 		return "just now"
 	}
+}
+
+// prInfo represents pull request information
+type prInfo struct {
+	number int
+	title  string
+	url    string
+	files  []string
+}
+
+// checkRelatedPRs checks if there are existing PRs for the files
+func checkRelatedPRs(files []fileChange) error {
+	const pageSize = 5
+	
+	// Process files in batches of 5
+	for offset := 0; offset < len(files); offset += pageSize {
+		end := offset + pageSize
+		if end > len(files) {
+			end = len(files)
+		}
+		
+		batch := files[offset:end]
+		fmt.Printf("\n📋 Checking batch %d-%d of %d files:\n", offset+1, end, len(files))
+		
+		availableFiles, err := checkBatchPRs(batch)
+		if err != nil {
+			return err
+		}
+		
+		// If we found files to work on, show them and stop
+		if len(availableFiles) > 0 {
+			fmt.Printf("\n✅ Found %d files available for contribution in this batch\n", len(availableFiles))
+			break
+		} else {
+			fmt.Printf("\n└── All files in this batch already have PRs, checking next batch...\n")
+		}
+	}
+	
+	return nil
+}
+
+// checkBatchPRs checks a batch of files for existing PRs
+func checkBatchPRs(batch []fileChange) ([]fileChange, error) {
+	var availableFiles []fileChange
+	
+	// Print table header
+	fmt.Printf("%-80s %-15s %s\n", "File", "Status", "PR Link")
+	fmt.Printf("%-80s %-15s %s\n", strings.Repeat("-", 80), strings.Repeat("-", 15), strings.Repeat("-", 50))
+	
+	for _, file := range batch {
+		// Convert English path to Chinese path for PR search
+		zhPath := file.filePath
+		if strings.HasPrefix(file.filePath, "content/en/") {
+			zhPath = strings.Replace(file.filePath, "content/en/", "content/zh-cn/", 1)
+		}
+		
+		// Search for PRs containing this Chinese file
+		prs, err := searchPRsForFile(zhPath)
+		if err != nil {
+			fmt.Printf("%-80s %-15s %s\n", zhPath, "Error", fmt.Sprintf("Error: %v", err))
+			continue
+		}
+		
+		if len(prs) == 0 {
+			// No PRs found, this file is available
+			availableFiles = append(availableFiles, file)
+			fmt.Printf("%-80s %-15s %s\n", zhPath, "Available", "-")
+		} else {
+			// Found existing PRs - show the first one
+			pr := prs[0]
+			fmt.Printf("%-80s %-15s %s\n", zhPath, "In Progress", pr.url)
+		}
+	}
+	
+	return availableFiles, nil
+}
+
+// searchPRsForFile searches for PRs that contain the specified Chinese file
+func searchPRsForFile(zhPath string) ([]prInfo, error) {
+	// Search for open PRs that contain this Chinese file
+	query := fmt.Sprintf("repo:kubernetes/website type:pr state:open %s in:files", zhPath)
+	
+	return searchPRs(query)
+}
+
+// searchPRs executes a GitHub search query for PRs
+func searchPRs(query string) ([]prInfo, error) {
+	cmd := exec.Command("gh", "api", "-X", "GET", "search/issues", "-f", fmt.Sprintf("q=%s", query), "--jq", ".items[] | {number: .number, title: .title, html_url: .html_url}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api failed: %w", err)
+	}
+	
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var prs []prInfo
+	
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		
+		// Parse JSON line
+		var prData struct {
+			Number  int    `json:"number"`
+			Title   string `json:"title"`
+			HTMLURL string `json:"html_url"`
+		}
+		
+		if err := json.Unmarshal([]byte(line), &prData); err != nil {
+			continue // Skip invalid lines
+		}
+		
+		prs = append(prs, prInfo{
+			number: prData.Number,
+			title:  prData.Title,
+			url:    prData.HTMLURL,
+		})
+	}
+	
+	return prs, nil
+}
+
+// truncateString truncates a string to the specified length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func init() {
