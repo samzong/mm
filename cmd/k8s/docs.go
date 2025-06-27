@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -70,11 +71,18 @@ Examples:
 				// For single file, show detailed diff directly
 				fmt.Print(result.rawOutput)
 			} else {
-				// For multiple files, show summary table
-				fmt.Printf("%-8s %-8s %s\n", "Added", "Deleted", "File")
-				fmt.Printf("%-8s %-8s %s\n", "-----", "-------", "----")
+				// For multiple files, show summary table with modification time
+				fmt.Printf("%-8s %-8s %-12s %-8s %s\n", "Added", "Deleted", "LastModified", "Commit", "File")
+				fmt.Printf("%-8s %-8s %-12s %-8s %s\n", "-----", "-------", "------------", "------", "----")
 				for _, file := range result.files {
-					fmt.Printf("%-8d %-8d %s\n", file.addedLines, file.deletedLines, file.filePath)
+					// Format time as relative (e.g., "2 days ago") 
+					timeStr := formatRelativeTime(file.lastModified)
+					fmt.Printf("%-8d %-8d %-12s %-8s %s\n", 
+						file.addedLines, 
+						file.deletedLines, 
+						timeStr,
+						file.lastCommit,
+						file.filePath)
 				}
 			}
 		} else {
@@ -97,6 +105,8 @@ type fileChange struct {
 	addedLines   int
 	deletedLines int
 	filePath     string
+	lastCommit   string    // commit hash
+	lastModified time.Time // last modification time
 }
 
 // lsyncResult represents the result of lsync execution
@@ -147,10 +157,15 @@ func executeLsync(path string) (*lsyncResult, error) {
 				deleted, err2 := strconv.Atoi(parts[1])
 				
 				if err1 == nil && err2 == nil {
+					// Get last modification time for the file
+					lastCommit, lastModified := getLastModificationTime(parts[2])
+					
 					result.files = append(result.files, fileChange{
 						addedLines:   added,
 						deletedLines: deleted,
 						filePath:     parts[2],
+						lastCommit:   lastCommit,
+						lastModified: lastModified,
 					})
 					hasNumstat = true
 				}
@@ -191,26 +206,99 @@ func executeLsync(path string) (*lsyncResult, error) {
 		}
 		
 		if diffFound && filePath != "" && (addedCount > 0 || deletedCount > 0) {
+			// Get last modification time for the file
+			lastCommit, lastModified := getLastModificationTime(filePath)
+			
 			result.files = append(result.files, fileChange{
 				addedLines:   addedCount,
 				deletedLines: deletedCount,
 				filePath:     filePath,
+				lastCommit:   lastCommit,
+				lastModified: lastModified,
 			})
 		}
 	}
 
-	// Sort by added lines (descending), then by deleted lines (descending)
+	// Sort by last modification time (descending - newest first)
 	sort.Slice(result.files, func(i, j int) bool {
-		if result.files[i].addedLines == result.files[j].addedLines {
-			return result.files[i].deletedLines > result.files[j].deletedLines
-		}
-		return result.files[i].addedLines > result.files[j].addedLines
+		return result.files[i].lastModified.After(result.files[j].lastModified)
 	})
 
 	result.hasChanges = len(result.files) > 0
 	
 	// Return success even if lsync.sh exits with non-zero (it's normal behavior)
 	return result, nil
+}
+
+// getLastModificationTime gets the last commit time for a file
+func getLastModificationTime(filePath string) (string, time.Time) {
+	// Get commit hash and timestamp
+	cmd := exec.Command("git", "log", "-n", "1", "--pretty=format:%h %ct", "--", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", time.Time{}
+	}
+	
+	parts := strings.Fields(strings.TrimSpace(string(output)))
+	if len(parts) < 2 {
+		return "", time.Time{}
+	}
+	
+	commitHash := parts[0]
+	timestampStr := parts[1]
+	
+	// Parse Unix timestamp
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		return commitHash, time.Time{}
+	}
+	
+	return commitHash, time.Unix(timestamp, 0)
+}
+
+// formatRelativeTime formats time as relative string (e.g., "2 days ago")
+func formatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	
+	now := time.Now()
+	diff := now.Sub(t)
+	
+	days := int(diff.Hours() / 24)
+	hours := int(diff.Hours())
+	minutes := int(diff.Minutes())
+	
+	if days > 365 {
+		years := days / 365
+		if years == 1 {
+			return "1 year ago"
+		}
+		return fmt.Sprintf("%d years ago", years)
+	} else if days > 30 {
+		months := days / 30
+		if months == 1 {
+			return "1 month ago"
+		}
+		return fmt.Sprintf("%d months ago", months)
+	} else if days > 0 {
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	} else if hours > 0 {
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	} else if minutes > 0 {
+		if minutes == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", minutes)
+	} else {
+		return "just now"
+	}
 }
 
 func init() {
