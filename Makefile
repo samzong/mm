@@ -1,11 +1,11 @@
 .PHONY: build install clean test fmt all help update-homebrew
 
 # Construct related variables
-BINARY_NAME=mycli
+BINARY_NAME=mm
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILDTIME=$(shell date -u '+%Y-%m-%d %H:%M:%S UTC')
 BUILD_DIR=./bin
-LDFLAGS=-ldflags "-X github.com/samzong/cli-template/cmd.Version=$(VERSION) -X 'github.com/samzong/cli-template/cmd.BuildTime=$(BUILDTIME)'"
+LDFLAGS=-ldflags "-X github.com/samzong/mm/cmd.Version=$(VERSION) -X 'github.com/samzong/mm/cmd.BuildTime=$(BUILDTIME)'"
 
 # Homebrew
 CLEAN_VERSION=$(shell echo $(VERSION) | sed 's/^v//')

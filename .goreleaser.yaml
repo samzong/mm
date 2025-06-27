@@ -16,7 +16,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X github.com/samzong/cli-template/cmd.Version={{.Version}} -X github.com/samzong/cli-template/cmd.BuildTime={{.Date}}
+      - -s -w -X github.com/samzong/mm/cmd.Version={{.Version}} -X github.com/samzong/mm/cmd.BuildTime={{.Date}}
     binary: '{{ .ProjectName }}'
 
 archives:

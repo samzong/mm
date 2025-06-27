@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samzong/cli-template/cmd"
+	"github.com/samzong/mm/cmd"
 )
 
 func main() {

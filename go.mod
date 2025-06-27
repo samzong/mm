@@ -1,4 +1,4 @@
-module github.com/samzong/cli-template
+module github.com/samzong/mm
 
 go 1.23
 

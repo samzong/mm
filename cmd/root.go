@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samzong/cli-template/internal/config"
+	"github.com/samzong/mm/internal/config"
 	"github.com/spf13/cobra"
 )
 
 var (
-	CLI_NAME = "mycli"
+	CLI_NAME = "mm"
 
 	Version   = "dev"
 	BuildTime = "unknown"
