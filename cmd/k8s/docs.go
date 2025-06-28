@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,26 +78,31 @@ Examples:
 				fmt.Printf("%-8s %-8s %-12s %-8s %s\n", "-----", "-------", "------------", "------", "----")
 				for _, file := range result.files {
 					// Format time as relative (e.g., "2 days ago") 
-					timeStr := formatRelativeTime(file.lastModified)
+					timeStr := formatRelativeTime(file.LastModified)
 					fmt.Printf("%-8d %-8d %-12s %-8s %s\n", 
-						file.addedLines, 
-						file.deletedLines, 
+						file.AddedLines, 
+						file.DeletedLines, 
 						timeStr,
-						file.lastCommit,
-						file.filePath)
+						file.LastCommit,
+						file.FilePath)
 				}
 			}
 		} else {
-			fmt.Printf("✅ All files are up to date\n")
+			fmt.Printf("All files are up to date\n")
 		}
 
 		// Check PR if requested
 		if checkPR && len(result.files) > 0 {
-			fmt.Printf("\n🔍 Checking related PRs...\n")
+			fmt.Printf("\nChecking related PRs...\n")
 			err := checkRelatedPRs(result.files)
 			if err != nil {
-				fmt.Printf("  ⚠️  Error checking PRs: %v\n", err)
+				fmt.Printf("  Error checking PRs: %v\n", err)
 			}
+		}
+
+		// Save to cache
+		if err := saveCache(result); err != nil {
+			fmt.Printf("Warning: Failed to save cache: %v\n", err)
 		}
 
 		return nil
@@ -105,11 +111,11 @@ Examples:
 
 // fileChange represents a single file change with statistics
 type fileChange struct {
-	addedLines   int
-	deletedLines int
-	filePath     string
-	lastCommit   string    // commit hash
-	lastModified time.Time // last modification time
+	AddedLines   int       `json:"added_lines"`
+	DeletedLines int       `json:"deleted_lines"`
+	FilePath     string    `json:"file_path"`
+	LastCommit   string    `json:"last_commit"`    // commit hash
+	LastModified time.Time `json:"last_modified"` // last modification time
 }
 
 // lsyncResult represents the result of lsync execution
@@ -120,16 +126,133 @@ type lsyncResult struct {
 	isSingleFile bool  // Track if this was a single file check
 }
 
+// lsyncCache represents cached lsync results
+type lsyncCache struct {
+	Timestamp time.Time    `json:"timestamp"`
+	GitCommit string       `json:"git_commit"`
+	Files     []fileChange `json:"files"`
+	TTL       time.Duration `json:"ttl"`
+}
+
 // isK8sProject checks if current directory is a k8s project
 func isK8sProject() bool {
 	_, err := os.Stat("./scripts/lsync.sh")
 	return err == nil
 }
 
+// getCacheFilePath returns the path to the cache file
+func getCacheFilePath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	cacheDir := filepath.Join(homeDir, ".cache", "mm")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, "k8s-docs-lsync.json"), nil
+}
+
+// getCurrentGitCommit gets the current git HEAD commit hash
+func getCurrentGitCommit() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// isValidCache checks if the cache is still valid
+func (c *lsyncCache) isValid() bool {
+	if c.Timestamp.IsZero() {
+		return false
+	}
+	
+	// Check TTL (30 minutes default)
+	ttl := c.TTL
+	if ttl == 0 {
+		ttl = 30 * time.Minute
+	}
+	if time.Since(c.Timestamp) > ttl {
+		return false
+	}
+	
+	// Check if git HEAD has changed
+	currentCommit := getCurrentGitCommit()
+	if currentCommit != "" && c.GitCommit != "" && c.GitCommit != currentCommit {
+		return false
+	}
+	
+	return true
+}
+
+// saveCache saves the lsync result to cache
+func saveCache(result *lsyncResult) error {
+	if result.isSingleFile || !result.hasChanges {
+		// Don't cache single file results or empty results
+		return nil
+	}
+	
+	cacheFile, err := getCacheFilePath()
+	if err != nil {
+		return err
+	}
+	
+	cache := lsyncCache{
+		Timestamp: time.Now(),
+		GitCommit: getCurrentGitCommit(),
+		Files:     result.files,
+		TTL:       30 * time.Minute,
+	}
+	
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	
+	return os.WriteFile(cacheFile, data, 0644)
+}
+
+// loadCache loads the cached lsync result
+func loadCache() (*lsyncCache, error) {
+	cacheFile, err := getCacheFilePath()
+	if err != nil {
+		return nil, err
+	}
+	
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return nil, err
+	}
+	
+	var cache lsyncCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, err
+	}
+	
+	return &cache, nil
+}
+
+// clearCache removes the cached lsync result
+func clearCache() error {
+	cacheFile, err := getCacheFilePath()
+	if err != nil {
+		return err
+	}
+	
+	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
+		return nil // Cache doesn't exist
+	}
+	
+	return os.Remove(cacheFile)
+}
+
 // executeLsync runs the lsync.sh script and parses the output
 func executeLsync(path string) (*lsyncResult, error) {
 	cmd := exec.Command("./scripts/lsync.sh", path)
 	output, _ := cmd.CombinedOutput()
+	
 	
 	// Check if this is a single file (ends with .md and is a file)
 	isSingleFile := strings.HasSuffix(path, ".md")
@@ -152,9 +275,9 @@ func executeLsync(path string) (*lsyncResult, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			// Check if this is numstat format: "added_lines deleted_lines filename"
-			parts := strings.Fields(line)
-			if len(parts) >= 3 && strings.HasPrefix(parts[2], "content/") {
+			// Check if this is numstat format: "added_lines deleted_lines filename" (tab separated)
+			parts := strings.Split(line, "\t")
+			if len(parts) == 3 && strings.HasPrefix(parts[2], "content/") {
 				// Parse the numbers
 				added, err1 := strconv.Atoi(parts[0])
 				deleted, err2 := strconv.Atoi(parts[1])
@@ -163,13 +286,14 @@ func executeLsync(path string) (*lsyncResult, error) {
 					// Get last modification time for the file
 					lastCommit, lastModified := getLastModificationTime(parts[2])
 					
-					result.files = append(result.files, fileChange{
-						addedLines:   added,
-						deletedLines: deleted,
-						filePath:     parts[2],
-						lastCommit:   lastCommit,
-						lastModified: lastModified,
-					})
+					fileChange := fileChange{
+						AddedLines:   added,
+						DeletedLines: deleted,
+						FilePath:     parts[2],
+						LastCommit:   lastCommit,
+						LastModified: lastModified,
+					}
+					result.files = append(result.files, fileChange)
 					hasNumstat = true
 				}
 			}
@@ -213,18 +337,18 @@ func executeLsync(path string) (*lsyncResult, error) {
 			lastCommit, lastModified := getLastModificationTime(filePath)
 			
 			result.files = append(result.files, fileChange{
-				addedLines:   addedCount,
-				deletedLines: deletedCount,
-				filePath:     filePath,
-				lastCommit:   lastCommit,
-				lastModified: lastModified,
+				AddedLines:   addedCount,
+				DeletedLines: deletedCount,
+				FilePath:     filePath,
+				LastCommit:   lastCommit,
+				LastModified: lastModified,
 			})
 		}
 	}
 
 	// Sort by last modification time (descending - newest first)
 	sort.Slice(result.files, func(i, j int) bool {
-		return result.files[i].lastModified.After(result.files[j].lastModified)
+		return result.files[i].LastModified.After(result.files[j].LastModified)
 	})
 
 	result.hasChanges = len(result.files) > 0
@@ -324,7 +448,7 @@ func checkRelatedPRs(files []fileChange) error {
 		}
 		
 		batch := files[offset:end]
-		fmt.Printf("\n📋 Checking batch %d-%d of %d files:\n", offset+1, end, len(files))
+		fmt.Printf("\nChecking batch %d-%d of %d files:\n", offset+1, end, len(files))
 		
 		availableFiles, err := checkBatchPRs(batch)
 		if err != nil {
@@ -333,10 +457,10 @@ func checkRelatedPRs(files []fileChange) error {
 		
 		// If we found files to work on, show them and stop
 		if len(availableFiles) > 0 {
-			fmt.Printf("\n✅ Found %d files available for contribution in this batch\n", len(availableFiles))
+			fmt.Printf("\nFound %d files available for contribution in this batch\n", len(availableFiles))
 			break
 		} else {
-			fmt.Printf("\n└── All files in this batch already have PRs, checking next batch...\n")
+			fmt.Printf("\nAll files in this batch already have PRs, checking next batch...\n")
 		}
 	}
 	
@@ -353,9 +477,9 @@ func checkBatchPRs(batch []fileChange) ([]fileChange, error) {
 	
 	for _, file := range batch {
 		// Convert English path to Chinese path for PR search
-		zhPath := file.filePath
-		if strings.HasPrefix(file.filePath, "content/en/") {
-			zhPath = strings.Replace(file.filePath, "content/en/", "content/zh-cn/", 1)
+		zhPath := file.FilePath
+		if strings.HasPrefix(file.FilePath, "content/en/") {
+			zhPath = strings.Replace(file.FilePath, "content/en/", "content/zh-cn/", 1)
 		}
 		
 		// Search for PRs containing this Chinese file
@@ -432,10 +556,244 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// workflowCmd represents the workflow command
+var workflowCmd = &cobra.Command{
+	Use:   "workflow [file-path]",
+	Short: "Generate git workflow commands for documentation translation",
+	Long: `Generate standardized git commands for Kubernetes documentation translation workflow.
+
+This command can work in two modes:
+1. Interactive mode (no arguments): Select from cached lsync results
+2. Direct mode (with file path): Generate commands for specific file
+
+Examples:
+  mm k8s docs workflow                                       # Interactive selection from cache
+  mm k8s docs workflow docs/concepts/overview/what-is-kubernetes.md  # Direct file specification
+  mm k8s docs workflow --available-only                     # Show only files without existing PRs
+
+Branch format: docs/sync/zh/{filename}
+Commit format: [zh-cn] sync {filepath}
+PR format: Same as commit message with full content path`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fresh, _ := cmd.Flags().GetBool("fresh")
+		availableOnly, _ := cmd.Flags().GetBool("available-only")
+		
+		if len(args) > 0 {
+			// Direct mode: generate commands for specific file
+			return generateWorkflowCommands(args[0])
+		}
+		
+		// Interactive mode: use cached results
+		cache, err := loadCache()
+		if err != nil || !cache.isValid() || fresh {
+			if fresh {
+				fmt.Printf("Refreshing cache...\n")
+			} else if err != nil {
+				fmt.Printf("No cache found.\n")
+			} else {
+				fmt.Printf("Cache expired (last updated: %s)\n", cache.Timestamp.Format("15:04"))
+			}
+			fmt.Printf("Please run: mm k8s docs lsync\n")
+			return nil
+		}
+		
+		// Filter files if --available-only is specified
+		if availableOnly {
+			return showAvailableFiles(cache)
+		}
+		
+		// Show cached results and let user select
+		return showInteractiveSelection(cache)
+	},
+}
+
+// generateWorkflowCommands generates git workflow commands for a specific file
+func generateWorkflowCommands(filePath string) error {
+	// Remove leading/trailing spaces and normalize path
+	filePath = strings.TrimSpace(filePath)
+	
+	// Extract filename without extension for branch name
+	filename := filepath.Base(filePath)
+	if strings.HasSuffix(filename, ".md") {
+		filename = filename[:len(filename)-3]
+	}
+	
+	// Generate components
+	branchName := fmt.Sprintf("docs/sync/zh/%s", filename)
+	commitMessage := fmt.Sprintf("[zh-cn] sync %s", filePath)
+	fullPath := fmt.Sprintf("content/zh-cn/%s", filePath)
+	
+	// Display the commands
+	fmt.Printf("Git workflow commands for: %s\n\n", filePath)
+	fmt.Printf("# 1. Create and switch to new branch\n")
+	fmt.Printf("git switch -c %s\n\n", branchName)
+	fmt.Printf("# 2. After translation, add file to staging area\n")
+	fmt.Printf("git add %s\n\n", fullPath)
+	fmt.Printf("# 3. Commit changes with signed-off-by\n")
+	fmt.Printf("git commit -s -m \"%s\"\n\n", commitMessage)
+	fmt.Printf("# 4. Push branch to remote\n")
+	fmt.Printf("git push origin %s\n\n", branchName)
+	fmt.Printf("# 5. Create pull request\n")
+	fmt.Printf("gh pr create --title \"%s\" --body \"%s\"\n", commitMessage, fullPath)
+	
+	return nil
+}
+
+// showInteractiveSelection shows cached files and lets user select one
+func showInteractiveSelection(cache *lsyncCache) error {
+	if len(cache.Files) == 0 {
+		fmt.Printf("No files need translation (cache from %s)\n", cache.Timestamp.Format("15:04"))
+		return nil
+	}
+	
+	fmt.Printf("Found %d files needing translation (cached at %s):\n\n", 
+		len(cache.Files), cache.Timestamp.Format("15:04"))
+	
+	// Display files with numbers
+	for i, file := range cache.Files {
+		// Convert English path to display path
+		displayPath := file.FilePath
+		if strings.HasPrefix(file.FilePath, "content/en/") {
+			displayPath = strings.TrimPrefix(file.FilePath, "content/en/")
+		}
+		
+		timeStr := formatRelativeTime(file.LastModified)
+		fmt.Printf("[%2d] %-60s (modified %s)\n", i+1, displayPath, timeStr)
+	}
+	
+	fmt.Printf("\nSelect a file number (1-%d), or press Enter to exit: ", len(cache.Files))
+	
+	var input string
+	fmt.Scanln(&input)
+	
+	if input == "" {
+		return nil
+	}
+	
+	// Parse selection
+	selection, err := strconv.Atoi(input)
+	if err != nil || selection < 1 || selection > len(cache.Files) {
+		return fmt.Errorf("invalid selection: %s", input)
+	}
+	
+	// Get selected file
+	selectedFile := cache.Files[selection-1]
+	
+	// Convert English path to docs path for command generation
+	filePath := selectedFile.FilePath
+	if strings.HasPrefix(filePath, "content/en/") {
+		filePath = strings.TrimPrefix(filePath, "content/en/")
+	}
+	
+	fmt.Printf("\n")
+	return generateWorkflowCommands(filePath)
+}
+
+// showAvailableFiles shows only files that don't have existing PRs
+func showAvailableFiles(cache *lsyncCache) error {
+	if len(cache.Files) == 0 {
+		fmt.Printf("No files need translation (cache from %s)\n", cache.Timestamp.Format("15:04"))
+		return nil
+	}
+	
+	fmt.Printf("Checking for existing PRs... (this may take a moment)\n\n")
+	
+	var availableFiles []fileChange
+	
+	// Check each file for existing PRs
+	for _, file := range cache.Files {
+		// Convert English path to Chinese path for PR search
+		zhPath := file.FilePath
+		if strings.HasPrefix(file.FilePath, "content/en/") {
+			zhPath = strings.Replace(file.FilePath, "content/en/", "content/zh-cn/", 1)
+		}
+		
+		// Search for PRs containing this Chinese file
+		prs, err := searchPRsForFile(zhPath)
+		if err != nil {
+			fmt.Printf("Error checking PRs for %s: %v\n", zhPath, err)
+			continue
+		}
+		
+		if len(prs) == 0 {
+			// No PRs found, this file is available
+			availableFiles = append(availableFiles, file)
+		}
+	}
+	
+	if len(availableFiles) == 0 {
+		fmt.Printf("All files already have existing PRs. No files available for translation.\n")
+		return nil
+	}
+	
+	fmt.Printf("Found %d files available for translation (cached at %s):\n\n", 
+		len(availableFiles), cache.Timestamp.Format("15:04"))
+	
+	// Display available files with numbers
+	for i, file := range availableFiles {
+		// Convert English path to display path
+		displayPath := file.FilePath
+		if strings.HasPrefix(file.FilePath, "content/en/") {
+			displayPath = strings.TrimPrefix(file.FilePath, "content/en/")
+		}
+		
+		timeStr := formatRelativeTime(file.LastModified)
+		fmt.Printf("[%2d] %-60s (modified %s)\n", i+1, displayPath, timeStr)
+	}
+	
+	fmt.Printf("\nSelect a file number (1-%d), or press Enter to exit: ", len(availableFiles))
+	
+	var input string
+	fmt.Scanln(&input)
+	
+	if input == "" {
+		return nil
+	}
+	
+	// Parse selection
+	selection, err := strconv.Atoi(input)
+	if err != nil || selection < 1 || selection > len(availableFiles) {
+		return fmt.Errorf("invalid selection: %s", input)
+	}
+	
+	// Get selected file
+	selectedFile := availableFiles[selection-1]
+	
+	// Convert English path to docs path for command generation
+	filePath := selectedFile.FilePath
+	if strings.HasPrefix(filePath, "content/en/") {
+		filePath = strings.TrimPrefix(filePath, "content/en/")
+	}
+	
+	fmt.Printf("\n")
+	return generateWorkflowCommands(filePath)
+}
+
+// clearCacheCmd represents the clear-cache command
+var clearCacheCmd = &cobra.Command{
+	Use:   "clear-cache",
+	Short: "Clear the cached lsync results",
+	Long:  `Remove the cached lsync results to force fresh scanning on next workflow command.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := clearCache(); err != nil {
+			return fmt.Errorf("failed to clear cache: %w", err)
+		}
+		fmt.Printf("Cache cleared successfully\n")
+		return nil
+	},
+}
+
 func init() {
 	// Add lsync command to docs
 	docsCmd.AddCommand(lsyncCmd)
+	docsCmd.AddCommand(workflowCmd)
+	docsCmd.AddCommand(clearCacheCmd)
 	
 	// Add flags for lsync
 	lsyncCmd.Flags().Bool("check-pr", false, "Check for related pull requests")
+	
+	// Add flags for workflow
+	workflowCmd.Flags().Bool("fresh", false, "Force refresh cache before showing selection")
+	workflowCmd.Flags().Bool("available-only", false, "Show only files without existing PRs")
 }
