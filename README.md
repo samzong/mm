@@ -1,1 +1,1 @@
-# mm
+# mm - multi-language maintenance
