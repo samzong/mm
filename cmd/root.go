@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/samzong/mm/cmd/k8s"
+	"github.com/samzong/mm/cmd/quality"
 	"github.com/spf13/cobra"
 )
 
@@ -33,4 +34,5 @@ func init() {
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(k8s.K8sCmd)
+	rootCmd.AddCommand(quality.QualityCmd)
 }
