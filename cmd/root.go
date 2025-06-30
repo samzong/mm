@@ -32,7 +32,34 @@ func Execute() error {
 func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 
+	// Setup command groups
+	setupCommandGroups()
+
+	// Add commands to appropriate groups
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(k8s.K8sCmd)
 	rootCmd.AddCommand(quality.QualityCmd)
+	rootCmd.AddCommand(formatCmd)
+}
+
+func setupCommandGroups() {
+	// Add command groups
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "project",
+		Title: "Project Commands:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "tools",
+		Title: "Tool Commands:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "basic",
+		Title: "Basic Commands:",
+	})
+
+	// Set group IDs for commands
+	k8s.K8sCmd.GroupID = "project"
+	quality.QualityCmd.GroupID = "tools"
+	formatCmd.GroupID = "tools"
+	versionCmd.GroupID = "basic"
 }
