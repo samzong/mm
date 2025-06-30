@@ -33,7 +33,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in a k8s project directory
 		if !isK8sProject() {
-			return fmt.Errorf("not in a Kubernetes project directory. Please run this command in the kubernetes/website project root")
+			return fmt.Errorf("not in a Kubernetes project directory. Please make sure scripts/lsync.sh is in project root")
 		}
 
 		apply, _ := cmd.Flags().GetBool("apply")

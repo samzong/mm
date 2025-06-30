@@ -38,7 +38,7 @@ Examples:
 		
 		// Check if we're in a k8s project directory
 		if !isK8sProject() {
-			return fmt.Errorf("scripts/lsync.sh not found. Please run this command in the kubernetes/website project root")
+			return fmt.Errorf("scripts/lsync.sh not found. Please make sure scripts/lsync.sh is in project root")
 		}
 
 		// Determine the path to check
@@ -622,7 +622,16 @@ func generateWorkflowCommands(filePath string) error {
 	// Generate components
 	branchName := fmt.Sprintf("docs/sync/zh/%s", filename)
 	commitMessage := fmt.Sprintf("[zh-cn] sync %s", filePath)
-	fullPath := fmt.Sprintf("content/zh-cn/%s", filePath)
+	
+	// Convert path to Chinese equivalent
+	var fullPath string
+	if strings.HasPrefix(filePath, "content/en/") {
+		fullPath = strings.Replace(filePath, "content/en/", "content/zh-cn/", 1)
+	} else if strings.HasPrefix(filePath, "docs/") {
+		fullPath = fmt.Sprintf("content/zh-cn/%s", filePath)
+	} else {
+		fullPath = fmt.Sprintf("content/zh-cn/docs/%s", filePath)
+	}
 	
 	// Display the commands
 	fmt.Printf("Git workflow commands for: %s\n\n", filePath)
@@ -635,7 +644,18 @@ func generateWorkflowCommands(filePath string) error {
 	fmt.Printf("# 4. Push branch to remote\n")
 	fmt.Printf("git push origin %s\n\n", branchName)
 	fmt.Printf("# 5. Create pull request\n")
-	fmt.Printf("gh pr create --title \"%s\" --body \"%s\"\n", commitMessage, fullPath)
+	
+	// Check if this is a fork repository
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	remoteURL, err := cmd.Output()
+	if err == nil && !strings.Contains(string(remoteURL), "kubernetes/website") {
+		// This is a fork, provide fork-compatible command
+		fmt.Printf("# For fork repositories:\n")
+		fmt.Printf("gh pr create --repo kubernetes/website --title \"%s\" --body \"Sync translation for %s\"\n", commitMessage, fullPath)
+	} else {
+		// This is the main repository or error getting remote
+		fmt.Printf("gh pr create --title \"%s\" --body \"Sync translation for %s\"\n", commitMessage, fullPath)
+	}
 	
 	return nil
 }
